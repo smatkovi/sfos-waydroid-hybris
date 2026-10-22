@@ -10,6 +10,8 @@ CFG=$WAYDROID_DIR/waydroid.cfg
 NODES_CFG=$WAYDROID_DIR/lxc/waydroid/config_nodes
 NET_SH=/usr/lib/waydroid/data/scripts/waydroid-net.sh
 IMAGES_PY=/usr/lib/waydroid/tools/helpers/images.py
+VENDOR_EXTRA=$WAYDROID_DIR/vendor_extra
+CORE_LIBS=/usr/local/share/waydroid-hybris/container-core-libs.txt
 
 log() { echo "waydroid-hybris-fixup: $*"; }
 
@@ -42,8 +44,11 @@ fix_cfg() {
     sed -i -e 's/^binder = .*/binder = puddlejumper/' \
            -e 's/^vndbinder = .*/vndbinder = vndpuddlejumper/' \
            -e 's/^hwbinder = .*/hwbinder = hwpuddlejumper/' "$CFG"
-    grep -q '^mount_host_egl' "$CFG" ||
-        sed -i 's/^\[waydroid\]$/[waydroid]\nmount_host_egl = False/' "$CFG"
+    # MAINLINE needs Waydroid's own Mesa, GPU mode (HALIUM) the host's Adreno.
+    if ! grep -q '^mount_host_egl' "$CFG"; then
+        egl=False; is_halium && egl=True
+        sed -i "s/^\[waydroid\]\$/[waydroid]\nmount_host_egl = $egl/" "$CFG"
+    fi
 }
 
 # 3. LXC device list is generated at init time with the old binder names.
@@ -78,9 +83,63 @@ fix_images() {
     fi
 }
 
+is_halium() { grep -q '^vendor_type = HALIUM' "$CFG" 2>/dev/null; }
+
+# 6. GPU mode (HALIUM vendor image): Waydroid rbinds the host's /vendor as
+#    /vendor_extra so the container can load the Qualcomm gralloc mapper and
+#    Adreno EGL. The host vendor is Android 15 without VNDK and ships its own
+#    libhidlbase, libutils, ... which then shadow the container's VNDK v33
+#    copies and break Waydroid's own HALs. Instead /vendor_extra becomes a
+#    directory of symlinks to every host library except those the container
+#    provides itself (container-core-libs.txt). libc++ is the exception: the
+#    host libs need symbols the Android 13 libc++ lacks. The host /vendor is
+#    mounted below lib*/.host so the linker's permitted paths still match.
+build_vendor_extra() {
+    python3 - "$VENDOR_EXTRA" "$CORE_LIBS" <<'EOF'
+import os, shutil, sys
+X, core_file = sys.argv[1], sys.argv[2]
+core = {l.strip() for l in open(core_file) if l.strip() and not l.startswith("#")}
+core.discard("libc++.so")
+shutil.rmtree(X, ignore_errors=True)
+for lib in ("lib", "lib64"):
+    if not os.path.isdir("/vendor/" + lib):
+        continue
+    os.makedirs(os.path.join(X, lib, ".host"))
+    for sub in ("", "hw", "egl"):
+        src = os.path.join("/vendor", lib, sub)
+        dst = os.path.join(X, lib, sub)
+        if not os.path.isdir(src):
+            continue
+        os.makedirs(dst, exist_ok=True)
+        rel = os.path.join("../" if sub else "", ".host", lib, sub)
+        for f in os.listdir(src):
+            if f.endswith(".so") and f not in core and os.path.isfile(os.path.join(src, f)):
+                os.symlink(os.path.join(rel, f), os.path.join(dst, f))
+os.symlink("lib64/.host/etc", os.path.join(X, "etc"))
+EOF
+}
+
+fix_nodes_cfg_halium() {
+    [ -f "$NODES_CFG" ] || return
+    sed -i "s|^lxc.mount.entry = /vendor vendor_extra none rbind|lxc.mount.entry = $VENDOR_EXTRA vendor_extra none rbind|" "$NODES_CFG"
+    anchor=$(echo "^lxc.mount.entry = $VENDOR_EXTRA vendor_extra " | sed 's|/|\\/|g')
+    for lib in lib64 lib; do
+        grep -q "vendor_extra/$lib/.host" "$NODES_CFG" ||
+            sed -i "/$anchor/a lxc.mount.entry = /vendor vendor_extra/$lib/.host none rbind,create=dir,optional 0 0" "$NODES_CFG"
+    done
+}
+
 make_nodes
 fix_cfg
 fix_nodes_cfg
 fix_net
 fix_images
+if is_halium; then
+    if [ -f "$CORE_LIBS" ]; then
+        build_vendor_extra
+        fix_nodes_cfg_halium
+    else
+        log "WARNING: $CORE_LIBS missing, GPU mode not set up"
+    fi
+fi
 exit 0
