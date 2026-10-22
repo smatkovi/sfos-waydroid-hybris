@@ -14,8 +14,8 @@ On the phone (Developer mode on, internet connection):
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/smatkovi/sfos-waydroid-hybris/main/setup.sh
-devel-su sh setup.sh          # software rendering (safe default)
-devel-su sh setup.sh --gpu    # experimental: Adreno GPU
+devel-su sh setup.sh             # Adreno GPU (default)
+devel-su sh setup.sh --no-gpu    # software rendering, if the GPU mode fails
 ```
 
 (`sudo sh setup.sh` works too if sudo is set up.) Then start Android with the
@@ -23,8 +23,9 @@ devel-su sh setup.sh --gpu    # experimental: Adreno GPU
 
 | Option | |
 | --- | --- |
-| `--gpu` | switch to the HALIUM vendor image and the host's Adreno driver (about 40 MB download) |
-| `--no-gpu` | switch back to the MAINLINE vendor image, Mesa llvmpipe (about 140 MB) |
+| (none) | GPU mode: HALIUM vendor image and the host's Adreno driver. On a fresh install `waydroid init` first fetches the MAINLINE vendor image, then the HALIUM one is downloaded (about 40 MB) |
+| `--gpu` | same as no option |
+| `--no-gpu` | MAINLINE vendor image, Mesa llvmpipe software rendering (about 140 MB when switching) |
 | `--no-init` | skip `waydroid init` (the 1 GB Android image download) |
 | `--uninstall` | remove the fixup hook (packages stay installed) |
 
@@ -58,7 +59,7 @@ protocol (`ro.hardware.gralloc=android`, `ro.hardware.egl=adreno`).
 
 ## Limitations
 
-- GPU mode is experimental and only tested on the Xperia 10 IV (smooth in waydroid-runner). It depends on
+- GPU mode is only tested on the Xperia 10 IV (smooth in waydroid-runner); on other devices try it and fall back with `--no-gpu`. It depends on
   the host vendor's libraries being loadable in an Android 13 process.
 - `container-core-libs.txt` matches the LineageOS 20 Waydroid image (VNDK
   v28-v30, v33). A system image based on another Android version needs a new

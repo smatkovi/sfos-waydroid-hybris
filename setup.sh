@@ -3,9 +3,9 @@
 # hybris ports. Run as root on the phone:
 #   devel-su sh setup.sh            (or: sudo sh setup.sh)
 # Options:
-#   --gpu         experimental: hardware rendering with the host's Adreno
-#                 driver (HALIUM vendor image, tested on Xperia 10 IV)
-#   --no-gpu      back to software rendering (MAINLINE vendor image)
+#   (default)     hardware rendering with the host's Adreno driver
+#                 (HALIUM vendor image, tested on Xperia 10 IV)
+#   --no-gpu      software rendering instead (MAINLINE vendor image)
 #   --no-init     do not download the Android images (waydroid init)
 #   --uninstall   remove the fixup hook (packages stay installed)
 set -e
@@ -18,7 +18,7 @@ SHARE=/usr/local/share/waydroid-hybris
 PACKAGES="waydroid waydroid-runner waydroid-settings waydroid-gbinder-config-hybris"
 
 DO_INIT=1
-GPU=
+GPU=HALIUM_13
 for a in "$@"; do
     case "$a" in
         --no-init) DO_INIT=0 ;;
@@ -91,6 +91,7 @@ fi
 switch_vendor() {
     cfg=/var/lib/waydroid/waydroid.cfg
     [ -f "$cfg" ] || { echo "Waydroid is not initialised yet." >&2; exit 1; }
+    grep -q "^vendor_type = $1\$" "$cfg" && return
     echo "== Switching vendor image to $1"
     systemctl stop waydroid-container 2>/dev/null || true
     python3 - "$1" <<'EOF'
@@ -126,7 +127,7 @@ EOF
     # regenerates the LXC config and props for the new vendor type
     waydroid upgrade --offline >/dev/null 2>&1 || true
 }
-[ -n "$GPU" ] && switch_vendor "$GPU"
+[ -f /var/lib/waydroid/waydroid.cfg ] && switch_vendor "$GPU"
 
 # In MAINLINE mode init still picks /dev/binder; correct cfg and LXC config.
 "$FIXUP"
@@ -138,7 +139,7 @@ systemctl restart waydroid-container
 echo
 echo "Done. Start Android with the \"Waydroid\" icon (waydroid-runner)."
 if grep -q '^vendor_type = HALIUM' /var/lib/waydroid/waydroid.cfg 2>/dev/null; then
-    echo "Graphics: host Adreno GPU (experimental, --no-gpu switches back)."
+    echo "Graphics: host Adreno GPU (--no-gpu switches to software rendering)."
 else
-    echo "Graphics: software rendering (Mesa llvmpipe), --gpu for the Adreno GPU."
+    echo "Graphics: software rendering (Mesa llvmpipe), run without --no-gpu for the Adreno GPU."
 fi
