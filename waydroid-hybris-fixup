@@ -1,0 +1,86 @@
+#!/bin/sh
+# waydroid-hybris-fixup: makes the chum Waydroid packages work on Sailfish OS
+# hybris ports (tested: Xperia 10 IV, SFOS 5.1, waydroid 1.4.3).
+#
+# Runs as ExecStartPre of waydroid-container.service, so every fix is
+# re-applied after a waydroid package update. All steps are idempotent.
+
+WAYDROID_DIR=/var/lib/waydroid
+CFG=$WAYDROID_DIR/waydroid.cfg
+NODES_CFG=$WAYDROID_DIR/lxc/waydroid/config_nodes
+NET_SH=/usr/lib/waydroid/data/scripts/waydroid-net.sh
+IMAGES_PY=/usr/lib/waydroid/tools/helpers/images.py
+
+log() { echo "waydroid-hybris-fixup: $*"; }
+
+# 1. Own binder devices. In MAINLINE mode waydroid would take /dev/binder,
+#    which on hybris belongs to the Android HAL container of the host; the
+#    servicemanager inside Waydroid then cannot become context manager and
+#    the container dies right after start. Names match
+#    /etc/gbinder.d/anbox-hybris.conf from waydroid-gbinder-config-hybris.
+make_nodes() {
+    [ -e /dev/binderfs/binder-control ] || { log "no binderfs, skipping nodes"; return; }
+    python3 - <<'EOF'
+import fcntl, os, struct
+# BINDER_CTL_ADD = _IOWR('b', 1, struct binderfs_device)
+BINDER_CTL_ADD = (3 << 30) | (264 << 16) | (ord('b') << 8) | 1
+fd = os.open("/dev/binderfs/binder-control", os.O_RDONLY)
+for n in ("puddlejumper", "vndpuddlejumper", "hwpuddlejumper"):
+    try:
+        fcntl.ioctl(fd, BINDER_CTL_ADD, struct.pack("256sII", n.encode(), 0, 0))
+    except FileExistsError:
+        pass
+    os.chmod("/dev/binderfs/" + n, 0o666)
+    if not os.path.lexists("/dev/" + n):
+        os.symlink("/dev/binderfs/" + n, "/dev/" + n)
+EOF
+}
+
+# 2. waydroid.cfg: binder names and the switch for the images.py patch.
+fix_cfg() {
+    [ -f "$CFG" ] || return
+    sed -i -e 's/^binder = .*/binder = puddlejumper/' \
+           -e 's/^vndbinder = .*/vndbinder = vndpuddlejumper/' \
+           -e 's/^hwbinder = .*/hwbinder = hwpuddlejumper/' "$CFG"
+    grep -q '^mount_host_egl' "$CFG" ||
+        sed -i 's/^\[waydroid\]$/[waydroid]\nmount_host_egl = False/' "$CFG"
+}
+
+# 3. LXC device list is generated at init time with the old binder names.
+fix_nodes_cfg() {
+    [ -f "$NODES_CFG" ] || return
+    sed -i -e 's|^lxc.mount.entry = /dev/binder dev/binder |lxc.mount.entry = /dev/puddlejumper dev/binder |' \
+           -e 's|^lxc.mount.entry = /dev/vndbinder dev/vndbinder |lxc.mount.entry = /dev/vndpuddlejumper dev/vndbinder |' \
+           -e 's|^lxc.mount.entry = /dev/hwbinder dev/hwbinder |lxc.mount.entry = /dev/hwpuddlejumper dev/hwbinder |' \
+           "$NODES_CFG"
+}
+
+# 4. Kernels without the iptables CHECKSUM target make waydroid-net.sh abort.
+#    The rule only fixes DHCP checksums for some clients; not needed here.
+fix_net() {
+    [ -f "$NET_SH" ] || return
+    grep -q -- '-A POSTROUTING .*CHECKSUM --checksum-fill$' "$NET_SH" &&
+        sed -i '/-A POSTROUTING .*CHECKSUM --checksum-fill$/ s/$/ || true/' "$NET_SH"
+}
+
+# 5. Waydroid bind-mounts the host's /vendor/lib*/egl (Adreno blobs) over its
+#    own Mesa drivers but still selects gralloc=gbm/egl=mesa, so the composer
+#    aborts with "couldn't find an OpenGL ES implementation". Add a cfg switch
+#    mount_host_egl (False = keep Waydroid's Mesa, software rendering).
+fix_images() {
+    [ -f "$IMAGES_PY" ] || return
+    grep -q 'mount_host_egl' "$IMAGES_PY" && return
+    if grep -q '^    for egl_path in \["/vendor/lib/egl", "/vendor/lib64/egl"\]:$' "$IMAGES_PY"; then
+        sed -i 's|^    for egl_path in \["/vendor/lib/egl", "/vendor/lib64/egl"\]:$|    for egl_path in ([] if cfg["waydroid"].get("mount_host_egl") == "False" else ["/vendor/lib/egl", "/vendor/lib64/egl"]):|' "$IMAGES_PY"
+        find /usr/lib/waydroid -name 'images*.pyc' -delete 2>/dev/null
+    else
+        log "WARNING: images.py changed upstream, EGL patch not applied"
+    fi
+}
+
+make_nodes
+fix_cfg
+fix_nodes_cfg
+fix_net
+fix_images
+exit 0
