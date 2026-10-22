@@ -58,7 +58,7 @@ protocol (`ro.hardware.gralloc=android`, `ro.hardware.egl=adreno`).
 
 ## Limitations
 
-- GPU mode is experimental and only tested on the Xperia 10 IV. It depends on
+- GPU mode is experimental and only tested on the Xperia 10 IV (smooth in waydroid-runner). It depends on
   the host vendor's libraries being loadable in an Android 13 process.
 - `container-core-libs.txt` matches the LineageOS 20 Waydroid image (VNDK
   v28-v30, v33). A system image based on another Android version needs a new
